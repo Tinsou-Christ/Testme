@@ -1,5 +1,7 @@
 import json
 import re
+import time
+import httpx
 from openai import OpenAI
 from config import OPENAI_API_KEY, OPENAI_BASE_URL, MODEL_NAME, SYSTEM_PROMPT, TOKEN_WARN_LIMIT, MAX_LOOPS
 from sandbox import TOOLS, execute_tool, close_sandbox
@@ -42,6 +44,30 @@ def get_context_info(user_id: int) -> dict:
     }
 
 
+COMPACT_API_URL = "https://puruboy-api.vercel.app/api/ai/gemini-v2"
+COMPACT_MAX_RETRIES = 5
+
+
+def _call_compact_api(prompt: str) -> str | None:
+    """Call Gemini compact API with exponential backoff. Returns answer or None on failure."""
+    for attempt in range(COMPACT_MAX_RETRIES):
+        try:
+            resp = httpx.post(
+                COMPACT_API_URL,
+                json={"prompt": prompt},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("success") and data.get("result", {}).get("answer"):
+                return data["result"]["answer"]
+            return None
+        except Exception:
+            if attempt < COMPACT_MAX_RETRIES - 1:
+                time.sleep(2 ** attempt)
+    return None
+
+
 def compact_history(user_id: int) -> str:
     if user_id not in conversations or len(conversations[user_id]) <= 1:
         return "No conversation to compact."
@@ -51,19 +77,15 @@ def compact_history(user_id: int) -> str:
     full_text = "\n".join(f"User: {m['content']}" for m in user_msgs)
 
     summary_prompt = (
-        "Summarize the following conversation into a short context paragraph "
-        "that preserves key technical details, code discussed, and user goals:\n\n"
+        "Ringkas percakapan berikut menjadi paragraf singkat yang mencakup "
+        "poin-poin penting, topik utama, dan tujuan user. "
+        "Jangan lewatkan detail teknis atau kode yang dibahas. "
+        "Gunakan format poin-poin:\n\n"
         f"{full_text}"
     )
 
-    try:
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": summary_prompt}],
-            max_tokens=500,
-            temperature=0.3,
-        )
-        summary = response.choices[0].message.content
+    summary = _call_compact_api(summary_prompt)
+    if summary:
         conversations[user_id] = [
             history[0],
             {"role": "user", "content": f"[Conversation Summary]\n{summary}"},
@@ -71,8 +93,7 @@ def compact_history(user_id: int) -> str:
         ]
         new_tokens = get_token_count(user_id)
         return f"Context compacted!\nBefore: {len(history)-1} messages\nAfter: 2 messages\nTokens: ~{new_tokens}"
-    except Exception as e:
-        return f"Compact failed: {str(e)}"
+    return "Compact failed: Gemini API unavailable after retries."
 
 
 def chat_with_tools(user_id: int, message: str, on_loop=None):
