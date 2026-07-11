@@ -16,7 +16,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from config import TELEGRAM_BOT_TOKEN, TOKEN_WARN_LIMIT, TOKEN_COMPACT_LIMIT, MAX_LOOPS, MODEL_NAME
+from config import TELEGRAM_BOT_TOKEN, TOKEN_WARN_LIMIT, TOKEN_COMPACT_LIMIT, TOKEN_BLOCK_LIMIT, MAX_LOOPS, MODEL_NAME
 from agent import chat_with_tools, chat_stream, clear_history, get_context_info, compact_history
 
 BOT_COMMANDS = [
@@ -175,6 +175,7 @@ body{{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:#0f17
 <div class="info-row"><span class="label">Current Time</span><span class="value">{now}</span></div>
 <div class="info-row"><span class="label">Max Loops</span><span class="value">{MAX_LOOPS}</span></div>
 <div class="info-row"><span class="label">Token Warn Limit</span><span class="value">{TOKEN_WARN_LIMIT:,}</span></div>
+<div class="info-row"><span class="label">Token Block Limit</span><span class="value">{TOKEN_BLOCK_LIMIT:,}</span></div>
 </div>
 </div>
 
@@ -393,6 +394,14 @@ async def ai_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     info = get_context_info(update.effective_chat.id)
+    if info["tokens"] >= TOKEN_BLOCK_LIMIT:
+        await update.message.reply_text(
+            f"🚫 *Context penuh:* `{info['tokens']:,}` tokens\n"
+            f"Jalankan `/compact` terlebih dahulu untuk merangkum dan membebaskan konteks.",
+            parse_mode="Markdown",
+            quote=True,
+        )
+        return
     if info["tokens"] >= TOKEN_WARN_LIMIT:
         await update.message.reply_text(
             f"⚠️ *Token usage high:* `{info['tokens']:,}` tokens\n"
@@ -413,6 +422,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text = update.message.text.strip()
 
     info = get_context_info(chat_id)
+    if info["tokens"] >= TOKEN_BLOCK_LIMIT:
+        logger.info("Token limit reached for chat %s (%s tokens) — blocking", chat_id, info["tokens"])
+        await update.message.reply_text(
+            f"🚫 *Context penuh:* `{info['tokens']:,}` tokens\n"
+            f"Jalankan `/compact` terlebih dahulu untuk merangkum dan membebaskan konteks.",
+            parse_mode="Markdown",
+            quote=True,
+        )
+        return
     if info["tokens"] >= TOKEN_WARN_LIMIT:
         logger.info("Token warning for chat %s (%s tokens)", chat_id, info["tokens"])
         await update.message.reply_text(

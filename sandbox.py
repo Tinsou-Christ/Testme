@@ -106,7 +106,12 @@ TOOLS = [
 
 def execute_tool(user_id: int, name: str, arguments: dict) -> tuple:
     """Execute a tool. Returns (result_text, file_data).
-    file_data is None for most tools, or (filename, content_bytes, caption) for send_file."""
+    file_data is None for most tools, or (filename, content_bytes, caption) for send_file.
+    If the sandbox is dead, it is automatically recreated and the call is retried once."""
+    return _execute_tool_inner(user_id, name, arguments, _retry=True)
+
+
+def _execute_tool_inner(user_id: int, name: str, arguments: dict, _retry: bool) -> tuple:
     sandbox = get_sandbox(user_id)
     try:
         if name == "bash":
@@ -210,4 +215,8 @@ def execute_tool(user_id: int, name: str, arguments: dict) -> tuple:
             return f"Error: Unknown tool '{name}'. Available tools: bash, write_file, read_file, edit_file, send_file.", None
 
     except Exception as e:
-        return f"Tool error ({name}): {str(e)}\nTip: Analyze the error and try a different approach.", None
+        if _retry:
+            # Sandbox may be dead — recreate and retry once
+            close_sandbox(user_id)
+            return _execute_tool_inner(user_id, name, arguments, _retry=False)
+        return f"Tool error ({name}): {str(e)}\nTip: The sandbox may have died. Try /clear to reset.", None
