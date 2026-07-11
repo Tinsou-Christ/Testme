@@ -1,4 +1,5 @@
 import json
+import re
 from openai import OpenAI
 from config import OPENAI_API_KEY, OPENAI_BASE_URL, MODEL_NAME, SYSTEM_PROMPT, TOKEN_WARN_LIMIT, MAX_LOOPS
 from sandbox import TOOLS, execute_tool, close_sandbox
@@ -7,6 +8,16 @@ client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
 
 conversations: dict[int, list[dict]] = {}
 MAX_HISTORY = 30
+
+# Strip <thought>...</thought> blocks from AI responses
+_THOUGHT_RE = re.compile(r"<thought>.*?</thought>", re.DOTALL)
+
+
+def _strip_thinking(text: str) -> str:
+    """Remove <thought>...</thought> blocks, return only the visible answer."""
+    if not text:
+        return text
+    return _THOUGHT_RE.sub("", text).strip()
 
 
 def _estimate_tokens(text: str) -> int:
@@ -98,7 +109,7 @@ def chat_with_tools(user_id: int, message: str, on_loop=None):
 
         # If no tool calls, return the text response
         if not choice.message.tool_calls:
-            reply = choice.message.content or ""
+            reply = _strip_thinking(choice.message.content or "")
             history.append({"role": "assistant", "content": reply})
             yield reply, True, loop_count, []
             return
@@ -188,6 +199,8 @@ def chat_stream(user_id: int, message: str):
         # Fallback: if content is empty, use reasoning text
         if not full_reply and reasoning_parts:
             full_reply = "".join(reasoning_parts)
+        full_reply = _strip_thinking(full_reply)
+        if full_reply:
             yield full_reply, False
         history.append({"role": "assistant", "content": full_reply})
         yield full_reply, True
