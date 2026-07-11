@@ -116,7 +116,7 @@ def chat_with_tools(user_id: int, message: str, on_loop=None):
             })
         history.append({
             "role": "assistant",
-            "content": choice.message.content,
+            "content": choice.message.content or "",
             "tool_calls": tool_calls_data,
         })
         tool_results = []

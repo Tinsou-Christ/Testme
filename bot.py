@@ -320,22 +320,76 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("History cleared.", quote=True)
 
 
+async def _run_with_tools(update: Update, message_text: str) -> None:
+    """Run chat_with_tools with real-time progress updates."""
+    chat_id = update.effective_chat.id
+
+    # Send initial message
+    status_msg = await update.message.reply_text("🤖 Thinking...", quote=True)
+
+    try:
+        generator = await asyncio.wait_for(
+            asyncio.to_thread(chat_with_tools, chat_id, message_text),
+            timeout=600,
+        )
+        final_response = ""
+        for text, is_done, loop_count, pending_files in generator:
+            if not is_done:
+                # Tool loop progress — edit the status message
+                try:
+                    await status_msg.edit_text(f"🔧 Processing... ({loop_count}/{MAX_LOOPS})")
+                except Exception:
+                    pass  # message not changed, ignore
+            else:
+                final_response = text
+
+            # Send any files returned by send_file tool
+            for filename, file_bytes, caption in pending_files:
+                try:
+                    await update.message.reply_document(
+                        document=BytesIO(file_bytes),
+                        filename=filename,
+                        caption=caption or filename,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to send file %s: %s", filename, e)
+
+        if final_response:
+            try:
+                await status_msg.edit_text(final_response)
+            except Exception:
+                await status_msg.reply_text(final_response)
+        else:
+            try:
+                await status_msg.edit_text("No response from AI.")
+            except Exception:
+                pass
+    except asyncio.TimeoutError:
+        try:
+            await status_msg.edit_text("Timed out. Try /clear and send a shorter message.")
+        except Exception:
+            pass
+    except Exception as e:
+        logger.exception("Error in _run_with_tools")
+        try:
+            await status_msg.edit_text(f"Error: {e}")
+        except Exception:
+            pass
+
+
 async def ai_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /ai command — pass remaining text as prompt."""
     if not update.message or not update.message.text:
         return
     user = update.effective_user
     _track_message(user.id, user.username, "ai")
-    # Extract text after /ai
     parts = update.message.text.split(maxsplit=1)
     prompt = parts[1] if len(parts) > 1 else ""
     if not prompt:
         await update.message.reply_text("Usage: /ai <your question>", quote=True)
         return
 
-    chat_id = update.effective_chat.id
-
-    info = get_context_info(chat_id)
+    info = get_context_info(update.effective_chat.id)
     if info["tokens"] >= TOKEN_WARN_LIMIT:
         await update.message.reply_text(
             f"⚠️ *Token usage high:* `{info['tokens']:,}` tokens\n"
@@ -344,25 +398,7 @@ async def ai_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             quote=True,
         )
 
-    await update.message.chat.send_action("typing")
-
-    try:
-        generator = await asyncio.wait_for(
-            asyncio.to_thread(chat_stream, chat_id, prompt),
-            timeout=300,
-        )
-        response = ""
-        for chunk, is_final in generator:
-            response = chunk
-        if response:
-            await update.message.reply_text(response, quote=True)
-        else:
-            await update.message.reply_text("No response from AI.", quote=True)
-    except asyncio.TimeoutError:
-        await update.message.reply_text("Timed out. Try a shorter message or /clear.", quote=True)
-    except Exception as e:
-        logger.exception("Error in ai_ask")
-        await update.message.reply_text(f"Error: {e}", quote=True)
+    await _run_with_tools(update, prompt)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -392,25 +428,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not text:
         return
 
-    await update.message.chat.send_action("typing")
-
-    try:
-        generator = await asyncio.wait_for(
-            asyncio.to_thread(chat_stream, chat_id, text),
-            timeout=300,
-        )
-        response = ""
-        for chunk, is_final in generator:
-            response = chunk
-        if response:
-            await update.message.reply_text(response, quote=True)
-        else:
-            await update.message.reply_text("No response from AI.", quote=True)
-    except asyncio.TimeoutError:
-        await update.message.reply_text("Timed out. Try a shorter message or /clear.", quote=True)
-    except Exception as e:
-        logger.exception("Error in handle_message")
-        await update.message.reply_text(f"Error: {e}", quote=True)
+    await _run_with_tools(update, text)
 
 
 # ─── Main ──────────────────────────────────────────────────────────────────────
