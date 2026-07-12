@@ -11,8 +11,8 @@ from firebase import (
 sandboxes: dict[int, Sandbox] = {}
 _sandbox_versions: dict[int, str] = {}  # chat_id -> last synced Firebase version
 
-BASH_TIMEOUT = 120_000  # 2 minutes in ms
-SANDBOX_TIMEOUT = 300_000  # 5 minutes in ms
+BASH_TIMEOUT = 120  # 2 minutes
+SANDBOX_TIMEOUT = 300  # 5 minutes
 
 
 def _sync_sandbox(sandbox, chat_id: int):

@@ -2,24 +2,15 @@ import json
 import re
 import time
 import httpx
-from openai import OpenAI
-from config import OPENAI_API_KEY, OPENAI_BASE_URL, MODEL_NAME, SYSTEM_PROMPT, TOKEN_WARN_LIMIT, MAX_LOOPS
-from sandbox import TOOLS, execute_tool, close_sandbox
-
-client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+from datetime import datetime
+from config import SYSTEM_PROMPT, TOKEN_WARN_LIMIT, MAX_LOOPS
+from sandbox import execute_tool, close_sandbox
 
 conversations: dict[int, list[dict]] = {}
 MAX_HISTORY = 30
 
-# Strip <thought>...</thought> blocks from AI responses
-_THOUGHT_RE = re.compile(r"<thought>.*?</thought>", re.DOTALL)
-
-
-def _strip_thinking(text: str) -> str:
-    """Remove <thought>...</thought> blocks, return only the visible answer."""
-    if not text:
-        return text
-    return _THOUGHT_RE.sub("", text).strip()
+COMPACT_API_URL = "https://puruboy-api.vercel.app/api/ai/gemini-v2"
+COMPACT_MAX_RETRIES = 5
 
 
 def _estimate_tokens(text: str) -> int:
@@ -44,10 +35,6 @@ def get_context_info(user_id: int) -> dict:
     }
 
 
-COMPACT_API_URL = "https://puruboy-api.vercel.app/api/ai/gemini-v2"
-COMPACT_MAX_RETRIES = 5
-
-
 def _call_compact_api(prompt: str) -> str | None:
     """Call Gemini compact API with exponential backoff. Returns answer or None on failure."""
     for attempt in range(COMPACT_MAX_RETRIES):
@@ -55,7 +42,7 @@ def _call_compact_api(prompt: str) -> str | None:
             resp = httpx.post(
                 COMPACT_API_URL,
                 json={"prompt": prompt},
-                timeout=30,
+                timeout=60,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -66,6 +53,57 @@ def _call_compact_api(prompt: str) -> str | None:
             if attempt < COMPACT_MAX_RETRIES - 1:
                 time.sleep(2 ** attempt)
     return None
+
+
+def _format_history(history: list[dict]) -> str:
+    formatted = ""
+    for msg in history:
+        role = msg["role"]
+        content = msg.get("content", "")
+        if role == "system":
+            formatted += f"SYSTEM: {content}\n\n"
+        elif role == "user":
+            formatted += f"USER: {content}\n\n"
+        elif role == "assistant":
+            formatted += f"ASSISTANT: {content}\n\n"
+        elif role == "tool":
+            formatted += f"TOOL_RESULT: {content}\n\n"
+    return formatted.strip()
+
+
+def parse_response(text: str):
+    """Parse XML response to extract message and tool call."""
+    message = ""
+    tool_data = None
+    
+    # Try to find content within <message> tags
+    msg_match = re.search(r"<message>(.*?)</message>", text, re.DOTALL)
+    if msg_match:
+        message = msg_match.group(1).strip()
+    else:
+        # Fallback: if no <message> tags but <response> exists, take everything inside <response> 
+        # that is not <tools_call>
+        resp_match = re.search(r"<response>(.*?)</response>", text, re.DOTALL)
+        if resp_match:
+            inner = resp_match.group(1)
+            inner = re.sub(r"<tools_call>.*?</tools_call>", "", inner, flags=re.DOTALL)
+            message = inner.strip()
+        else:
+            # If no tags at all, just take the raw text
+            message = text.strip()
+            
+    # Parse tool call
+    tool_match = re.search(r"<tool name=\"(.*?)\">(.*?)</tool>", text, re.DOTALL)
+    if tool_match:
+        tool_name = tool_match.group(1)
+        params_text = tool_match.group(2)
+        params = {}
+        param_matches = re.finditer(r"<parameter name=\"(.*?)\">(.*?)</parameter>", params_text, re.DOTALL)
+        for pm in param_matches:
+            params[pm.group(1)] = pm.group(2).strip()
+        tool_data = {"name": tool_name, "arguments": params}
+        
+    return message, tool_data
 
 
 def compact_history(user_id: int) -> str:
@@ -97,10 +135,7 @@ def compact_history(user_id: int) -> str:
 
 
 def chat_with_tools(user_id: int, message: str, on_loop=None):
-    """Generator that yields (text, is_done, loop_count) tuples.
-    on_loop is called with loop_count when a tool call is processed."""
     if user_id not in conversations:
-        from datetime import datetime
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         system_with_date = f"{SYSTEM_PROMPT}\n\nCurrent date and time: {now} (UTC+0 / use local timezone if specified)."
         conversations[user_id] = [{"role": "system", "content": system_with_date}]
@@ -114,79 +149,44 @@ def chat_with_tools(user_id: int, message: str, on_loop=None):
     loop_count = 0
 
     while loop_count < MAX_LOOPS:
-        try:
-            response = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=history,
-                tools=TOOLS,
-                max_tokens=2000,
-                temperature=0.7,
-            )
-        except Exception as e:
-            yield f"Error: {str(e)}", True, loop_count, []
+        full_prompt = _format_history(history)
+        raw_response = _call_compact_api(full_prompt)
+        
+        if not raw_response:
+            yield "Error: Gemini API unavailable.", True, loop_count, []
             return
 
-        choice = response.choices[0]
+        reply, tool_call = parse_response(raw_response)
 
-        # If no tool calls, return the text response
-        if not choice.message.tool_calls:
-            reply = _strip_thinking(choice.message.content or "")
+        if not tool_call:
             history.append({"role": "assistant", "content": reply})
             yield reply, True, loop_count, []
             return
 
-        # Process tool calls — convert to dict so history stays serializable
-        tool_calls_data = []
-        for tc in choice.message.tool_calls:
-            tool_calls_data.append({
-                "id": tc.id,
-                "type": "function",
-                "function": {
-                    "name": tc.function.name,
-                    "arguments": tc.function.arguments,
-                },
-            })
-        history.append({
-            "role": "assistant",
-            "content": choice.message.content or "",
-            "tool_calls": tool_calls_data,
-        })
-        tool_results = []
-        pending_files = []
+        # Process tool call
+        history.append({"role": "assistant", "content": raw_response})
+        
+        func_name = tool_call["name"]
+        func_args = tool_call["arguments"]
 
-        for tool_call in choice.message.tool_calls:
-            func_name = tool_call.function.name
-            try:
-                func_args = json.loads(tool_call.function.arguments)
-            except json.JSONDecodeError:
-                func_args = {}
-
-            result_text, file_data = execute_tool(user_id, func_name, func_args)
-            tool_results.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": result_text,
-            })
-            if file_data:
-                pending_files.append(file_data)
-
-        history.extend(tool_results)
+        result_text, file_data = execute_tool(user_id, func_name, func_args)
+        
+        history.append({"role": "tool", "content": result_text})
+        
         loop_count += 1
-
         if on_loop:
             on_loop(loop_count)
 
-        # Yield progress with optional files
+        pending_files = [file_data] if file_data else []
         yield f"Processing... ({loop_count}/{MAX_LOOPS})", False, loop_count, pending_files
 
-    # Max loops reached
-    reply = "Error: Max tool call loops (50) reached."
+    reply = "Error: Max tool call loops reached."
     history.append({"role": "assistant", "content": reply})
     yield reply, True, loop_count, []
 
 
 def chat_stream(user_id: int, message: str):
-    """Streaming text-only chat (no tools)."""
+    """Simulated streaming for the compact API."""
     if user_id not in conversations:
         conversations[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
 
@@ -196,37 +196,24 @@ def chat_stream(user_id: int, message: str):
     if len(history) > MAX_HISTORY + 1:
         history[:] = [history[0]] + history[-(MAX_HISTORY):]
 
-    try:
-        stream = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=history,
-            max_tokens=2000,
-            temperature=0.7,
-            stream=True,
-        )
-        full_reply = ""
-        reasoning_parts = []
-        for chunk in stream:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            # Collect reasoning tokens (some models return text here)
-            if hasattr(delta, "reasoning") and delta.reasoning:
-                reasoning_parts.append(delta.reasoning)
-            # Collect content tokens
-            if delta.content:
-                full_reply += delta.content
-                yield delta.content, False
-        # Fallback: if content is empty, use reasoning text
-        if not full_reply and reasoning_parts:
-            full_reply = "".join(reasoning_parts)
-        full_reply = _strip_thinking(full_reply)
-        if full_reply:
-            yield full_reply, False
-        history.append({"role": "assistant", "content": full_reply})
-        yield full_reply, True
-    except Exception as e:
-        yield f"Error: {str(e)}", True
+    full_prompt = _format_history(history)
+    raw_response = _call_compact_api(full_prompt)
+    
+    if not raw_response:
+        yield "Error: Gemini API unavailable.", True
+        return
+
+    reply, _ = parse_response(raw_response)
+    history.append({"role": "assistant", "content": reply})
+    
+    # Simulate streaming by yielding chunks
+    words = reply.split(" ")
+    for i in range(len(words)):
+        chunk = words[i] + (" " if i < len(words) - 1 else "")
+        yield chunk, False
+        time.sleep(0.01)
+    
+    yield reply, True
 
 
 def chat(user_id: int, message: str) -> str:
@@ -239,18 +226,15 @@ def chat(user_id: int, message: str) -> str:
     if len(history) > MAX_HISTORY + 1:
         history[:] = [history[0]] + history[-(MAX_HISTORY):]
 
-    try:
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=history,
-            max_tokens=2000,
-            temperature=0.7,
-        )
-        reply = response.choices[0].message.content
-        history.append({"role": "assistant", "content": reply})
-        return reply
-    except Exception as e:
-        return f"Error: {str(e)}"
+    full_prompt = _format_history(history)
+    raw_response = _call_compact_api(full_prompt)
+    
+    if not raw_response:
+        return "Error: Gemini API unavailable."
+
+    reply, _ = parse_response(raw_response)
+    history.append({"role": "assistant", "content": reply})
+    return reply
 
 
 def clear_history(user_id: int) -> None:

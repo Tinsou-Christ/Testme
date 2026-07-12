@@ -126,7 +126,7 @@ body{{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:#0f17
 <div class="logo">P</div>
 <div class="header-text">
 <h1>{BOT_DISPLAY_NAME}</h1>
-<p>Telegram AI Bot &mdash; Powered by OpenAI</p>
+<p>Telegram AI Bot &mdash; Powered by Gemini</p>
 </div>
 <div class="status-badge online"><span class="dot"></span>Running</div>
 </div>
