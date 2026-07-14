@@ -6,7 +6,7 @@ import sys
 # First, install watchdog: pip install watchdog
 # Then, run: watchmedo auto-restart -d . -p "*.py" -- python dev.py
 
-os.environ["TELEGRAM_BOT_TOKEN"] = "8535593654:AAEaEddzmyzVxkwWPy1l8JiHT7UfPZ-pOtA"
+os.environ["TELEGRAM_BOT_TOKEN"] = "8996267827:AAFr90VroINCcdtYPWX3ZWJ2m2vq3LxY-ao"
 os.environ["DEV_MODE"] = "true"
 
 print("Starting run.py with development token...")
