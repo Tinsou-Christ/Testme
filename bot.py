@@ -292,13 +292,14 @@ async def context_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     _track_message(update.effective_user.id, update.effective_user.username, "context")
     info = get_context_info(update.effective_chat.id)
     used = info["tokens"]
-    pct = (used / TOKEN_WARN_LIMIT) * 100
+    limit = TOKEN_BLOCK_LIMIT
+    pct = (used / limit) * 100
     bar_len = 20
-    filled = int(bar_len * used / TOKEN_WARN_LIMIT)
+    filled = int(bar_len * used / limit)
     bar = "\u2588" * filled + "\u2591" * (bar_len - filled)
 
     status = "Normal"
-    if used >= TOKEN_COMPACT_LIMIT:
+    if used >= TOKEN_BLOCK_LIMIT:
         status = "\u26a0\ufe0f LIMIT REACHED"
     elif used >= TOKEN_WARN_LIMIT:
         status = "\u26a0\ufe0f Warning"
@@ -308,7 +309,7 @@ async def context_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(
         f"*Context Status*\n\n"
         f"Model: `{MODEL_NAME}`\n"
-        f"Tokens used: `{used:,}` / `{TOKEN_WARN_LIMIT:,}`\n"
+        f"Tokens used: `{used:,}` / `{limit:,}`\n"
         f"[{bar}] {pct:.1f}%\n"
         f"Status: {status}\n"
         f"Messages: `{info['messages']}`\n\n"

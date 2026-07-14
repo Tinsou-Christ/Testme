@@ -11,7 +11,7 @@ from firebase import save_history, get_history, clear_fb_history, clear_all_fb_d
 logger = logging.getLogger(__name__)
 
 conversations: dict[int, list[dict]] = {}
-MAX_HISTORY = 30
+
 
 COMPACT_API_URL = "https://puruboy-api.vercel.app/api/ai/gemini-v2"
 AI_MAX_RETRIES = 5
@@ -189,10 +189,6 @@ def chat_with_tools(user_id: int, message: str, on_loop=None):
     user_msg = {"role": "user", "content": message}
     global_history.append(user_msg)
 
-    # Maintain MAX_HISTORY (including system prompt)
-    if len(global_history) > MAX_HISTORY + 1:
-        global_history[:] = [global_history[0]] + global_history[-(MAX_HISTORY):]
-    
     save_history(user_id, global_history)
 
     # Use global history for the tool-calling loop to preserve tool interaction history.
@@ -252,40 +248,15 @@ def chat_with_tools(user_id: int, message: str, on_loop=None):
             )
             loop_history.append({"role": "tool", "content": feedback})
             
-            # Prune old tool interactions (max 12 pairs)
-            tool_indices = [i for i, m in enumerate(global_history) if m["role"] == "tool"]
-            if len(tool_indices) > 12:
-                idx = tool_indices[0]
-                if idx > 0 and global_history[idx-1]["role"] == "assistant":
-                    del global_history[idx]
-                    del global_history[idx-1]
-                else:
-                    del global_history[idx]
-            
             save_history(user_id, global_history)
         else:
             invalid_tool_count = 0
             loop_history.append({"role": "tool", "content": result_text})
             
-            # Prune old tool interactions (max 12 pairs)
-            tool_indices = [i for i, m in enumerate(global_history) if m["role"] == "tool"]
-            if len(tool_indices) > 12:
-                idx = tool_indices[0]
-                if idx > 0 and global_history[idx-1]["role"] == "assistant":
-                    del global_history[idx]
-                    del global_history[idx-1]
-                else:
-                    del global_history[idx]
-            
             save_history(user_id, global_history)
         
         loop_count += 1
         
-        # Maintain MAX_HISTORY inside the loop to prevent bloat
-        if len(global_history) > MAX_HISTORY + 1:
-            global_history[:] = [global_history[0]] + global_history[-(MAX_HISTORY):]
-            save_history(user_id, global_history)
-
         if on_loop:
             on_loop(loop_count)
 
@@ -304,9 +275,6 @@ def chat_stream(user_id: int, message: str):
 
     global_history = conversations[user_id]
     global_history.append({"role": "user", "content": message})
-
-    if len(global_history) > MAX_HISTORY + 1:
-        global_history[:] = [global_history[0]] + global_history[-(MAX_HISTORY):]
     
     save_history(user_id, global_history)
 
@@ -338,9 +306,6 @@ def chat(user_id: int, message: str) -> str:
 
     global_history = conversations[user_id]
     global_history.append({"role": "user", "content": message})
-
-    if len(global_history) > MAX_HISTORY + 1:
-        global_history[:] = [global_history[0]] + global_history[-(MAX_HISTORY):]
     
     save_history(user_id, global_history)
 
